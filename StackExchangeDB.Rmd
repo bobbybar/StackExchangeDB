@@ -1,0 +1,433 @@
+---
+title: "Stack Exchange DB"
+author: "Robert Baranic"
+header-includes:
+  \usepackage{fvextra}
+  \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}
+output:
+  pdf_document:
+    latex_engine: xelatex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(RSQLite)
+```
+
+
+```{r}
+list.files()
+```
+
+```{r}
+con = dbConnect(SQLite(), "stats.stackexchange.db")
+```
+
+```{r}
+sql = function(query) dbGetQuery(con, query)
+```
+
+```{r}
+dbListTables(con)
+```
+
+1. How many users are there?
+To do this, we will select the users table and sum the rows since the ID is unique to each user.
+```{r}
+q = "SELECT COUNT(*) 
+FROM Users"
+sql(q)
+```
+
+2. How many users joined since 2020? (Hint: Convert the CreationDate to a year.)
+To do this, we will convert the CreationDate column to dates and subset the data to >2020. The dates look like this: 2010-07-19T06:55:26.860, so we only need to look at the first 4 characters.
+```{r}
+q = "SELECT CAST(substr(CreationDate, 1, 4) as decimal) as x 
+FROM Users 
+WHERE x >= 2020"
+date.df = sql(q)
+
+table(date.df$x)
+nrow(date.df)
+```
+
+3. How many users joined each year? Describe this with a plot, commenting on any anomalies.
+We will do this in the same way as before, except we will not subset the data, then we will graph the results. Creation date peaked in 2017 and has been in decline since then. 2023 has very small number of creation date, likely due to it being the current year.
+```{r}
+q = "SELECT CAST(substr(CreationDate, 1, 4) as decimal) as x 
+FROM Users"
+date.df = sql(q)
+
+table(date.df$x)
+
+hist(date.df$x)
+```
+
+4. How many different types of posts are there in the Posts table? Get the description of the types from the
+PostTypeIdMap table. In other words, create a table with the description of each post type and the number
+of posts of that type, and arrange it from most to least occurrences.
+Here we will be doing an inner join on the Posts and PostTypeIdMap, joining on their key. Then, we group by PostTypeID and COUNT(*) so we get a sum of the number of those posts. The only other column in PostTypeIdMap is value, so we will join that to the table which contains the description of the post.
+
+```{r}
+q = "SELECT PostTypeId, COUNT(*) 
+FROM Posts 
+GROUP BY PostTypeId;"
+
+q = "SELECT PostTypeId, Count(*), value 
+FROM Posts as x 
+INNER JOIN PostTypeIdMap as y 
+ON x.PostTypeId = y.id 
+GROUP BY PostTypeId 
+ORDER BY COUNT(*) DESC"
+sql(q)
+```
+
+5. How many posted questions are there?
+From the previous question, we can see that the PostTypeId for "question" is 1, so we can simply subset Posts by this.
+
+```{r}
+q = "SELECT COUNT(*) 
+FROM Posts 
+WHERE PostTypeId = 1"
+sql(q)
+```
+
+6. What are the top 50 most common tags on questions? For each of the top 50 tags on questions, how many
+questions are there for each tag.
+This will be a similar format to #4. We will group Posts by Tags, COUNT(*) and subset where PostId is 1, so it is a question. Then we will order by desc, limit 50, so we get the top 50.
+
+```{r}
+q = "SELECT Tags, COUNT(*) 
+FROM Posts 
+WHERE PostTypeId = 1 
+GROUP BY Tags 
+ORDER BY COUNT(*) DESC 
+LIMIT 50"
+sql(q)
+```
+
+8. How many answers are there?
+Like #5, we will use the same form, but use the answer index of 2 instead of 1.
+
+```{r}
+q = "SELECT COUNT(*) 
+FROM Posts 
+WHERE PostTypeId = 2"
+sql(q)
+```
+
+9. What’s the most recent question (by date-time) in the Posts table?
+• Find it on the stats.exchange.com Web site and provide the URL.
+• How would we map a question in the Posts table to the corresponding SO URL?
+I understood this as the most recent post in terms of creation date, so we will use this column to determine this. We will convert the characters to a date using datetime() and order by DESC to get the most recent post. Then, we will also include the PostId and the title so we can locate the post to get the URL.
+
+```{r}
+q = "SELECT Id, Title, datetime(CreationDate) as Date 
+FROM Posts
+WHERE PostTypeId = 1 
+ORDER BY Date DESC"
+
+post.df = sql(q)
+
+head(post.df)
+```
+The most recent post was not able to be found, but the second post has the URL as https://stats.stackexchange.com/questions/608403/an-example-of-ma-infty-process-with-the-property-of-long-term-dependence-and
+
+We can see a clear pattern as https://stats.stackexchange.com/questions/"Id"/"title-sepaarated-by-dashes" but the title in the URL cuts off at some point. Based on nchar, the title is 76 characters with the dashes, which could be the limit. We could map a question from the table to the URL by having https://stats.stackexchange.com/questions/ followed by the Id/ and the title with " " replaced by "-" limited to 76 characters, that will get the URL.
+
+```{r}
+nchar("an-example-of-ma-infty-process-with-the-property-of-long-term-dependence-and")
+```
+
+10. For the 10 users who posted the most questions
+• How many questions did they post?
+• What are the users’ names?
+• When did they join SO?
+• What is their Reputation?
+• What country do they have in their profile?
+To do this, we will have to join the Posts table with the Users table. We will have to count the number of questions posted by each user and then sort it by DESC. We will join them by matching the Users.Id to Posts.OwnerUserId. 
+
+```{r}
+q = "SELECT OwnerUserId, DisplayName, u.CreationDate, u.Reputation, u.Location, COUNT(DISTINCT p.Id) as Questions
+FROM Posts as p, Users as u
+WHERE p.OwnerUserId = u.Id
+AND PostTypeId = 1
+GROUP BY OwnerUserId
+ORDER BY Questions DESC
+LIMIT 10"
+
+sql(q)
+```
+
+
+12. For each of the following terms, how many questions contain that term: Regression, ANOVA, Data
+Mining, Machine Learning, Deep Learning, Neural Network.
+For this, I interpret it as the title of a question containing any of these terms, not the body. So we will use the Posts table and filter it with LIKE each of the terms, grouping by so using CASE. (source: https://stackoverflow.com/questions/6101404/sql-group-by-like)
+
+```{r}
+q = "SELECT Title, COUNT(*)
+FROM Posts
+WHERE (Title LIKE '%Regression%') OR (Title LIKE '%ANOVA%') OR (Title LIKE '%Data Mining%') OR (Title LIKE '%Machine Learning%') OR (Title LIKE '%Deep Learning%') OR (Title LIKE '%Neural Network%')
+GROUP BY 
+  CASE
+    WHEN Title LIKE '%Regression%' THEN 'Regression'
+    WHEN Title LIKE '%ANOVA%' THEN 'ANOVA'
+    WHEN Title LIKE '%Data Mining%' THEN 'Deep Mining'
+    WHEN Title LIKE '%Machine Learning%' THEN 'Machine Learning'
+    WHEN Title LIKE '%Deep Learning%' THEN 'Deep Learning'
+    WHEN Title LIKE '%Neural Network%' THEN 'Neural Network'
+    ELSE NULL
+  END"
+    
+sql(q)
+```
+I am not sure if SQLite supports the renaming of GROUP BY like the example on SO showed, but this does count the number of posts regardless, just without renaming. The group can be determined by the keyword in the titles.
+
+14. What is the date range for the questions and answers in this database?
+To do this, we will look at the posts table and convert the creation date to a date and then find the minimum and maximum values for this. Then we will use julianday to do the difference between the two days, but since this is a lot of days, we will divide it 365 to get the number of years difference.
+
+```{r}
+q = "SELECT MIN(datetime(CreationDate)), MAX(datetime(CreationDate)), (MAX(julianday(CreationDate)) - MIN(julianday(CreationDate))) / 365
+FROM Posts"
+
+sql(q)
+```
+
+15. What question has the most comments associated with it?
+• how many answers are there for this question?
+To do this, we will use the posts table and find the post with MAX(CommentCount). From this, we will also show the PostId, Title, and the answer count for this post. We will have to filter for questions again, so we will filter PostTypeId = 1 as known by the earlier command.
+
+```{r}
+q = "SELECT Id, Title, MAX(CommentCount), AnswerCount, CreationDate
+FROM Posts
+WHERE PostTypeId = 1"
+
+sql(q)
+```
+
+16. How many comments are there across all posts?
+• How many posts have a comment?
+• What is the distribution of comments per question?
+To do this, we will once again use only the Posts table. I do think we can answer the first two questions in one command, but the third question will need its own command so we can plot it. We will filter the posts such that each post in the table has at least one comment, then we will collapse the table by SUM() and COUNT(*). For the third question, we will filter only question by posttypeid and then we will plot a boxplot of the comment counts.
+```{r}
+q = "SELECT SUM(CommentCount) as TotalComments, COUNT(*) as NumPostsWithComments
+FROM Posts
+WHERE CommentCount >= 1"
+
+sql(q)
+```
+
+```{r}
+q = "SELECT CommentCount
+FROM Posts
+WHERE PostTypeId = 1"
+
+df = sql(q)
+
+boxplot(df$CommentCount, horizontal = T)
+hist(df$CommentCount)
+summary(df$CommentCount)
+```
+
+
+Required Questions:
+
+21. Compute the table that contains
+• the question,
+• the name of the user who posted it,
+• when that user joined,
+• their location
+• the date the question was first posted,
+• the accepted answer,
+• when the accepted answer was posted
+• the name of the user who provided the accepted answer.
+
+To do this, we will have to merge the Posts table with the users table, twice. Once to get the user with the question, and a second time to get the user with the answer so that we can join them both together. I simply went down the list to get each column needed: title of question, display name of question poster, creation date of user, location of user, date of question creation, the body of the accepted answer since these dont have titles, the date of the answer post, and the user who posted it. 
+
+
+```{r}
+q = "SELECT q.Title, u1.DisplayName, u1.CreationDate, u1.Location, q.CreationDate, a.Body, a.CreationDate, u2.DisplayName
+FROM Posts as q, Posts as a, Users as u1, Users as u2
+WHERE q.OwnerUserId = u1.Id
+AND a.OwnerUserId = u2.Id
+AND q.AcceptedAnswerId = a.Id
+AND q.PostTypeId = 1"
+
+head(sql(q))
+```
+
+22. Determine the users that have only posted questions and never answered a question? (Compute the
+table containing the number of questions, number of answers and the user’s login name for this group.)
+How many are there?
+To do this, I will have to join the Posts and Users table once again. We will join on OwnerUserId = Id, then we will have to find the frequency of posts and answers. To do this, I found the most efficient way is to use SUM(CASE...) where we will have a case when PostTypeID = 1 and 2, so that the sum will be the frequency (source: https://stackoverflow.com/questions/24767130/get-frequency-of-a-column-in-sql-server). Then we can order by the number of answers to see those who have not answered. Then, to find those who have posted at least 1 question, I nested that query and subsetted it from there. I found it easiest to just table the number of answers to find the number of those who have not answered.
+
+```{r}
+q = "SELECT Questions, Answers
+FROM (
+
+SELECT u.Id, u.DisplayName, SUM(CASE WHEN PostTypeId = 1 then 1 else 0 end) as Questions, SUM(CASE WHEN PostTypeId = 2 then 1 else 0 end) as Answers
+FROM Posts as p, Users as u
+WHERE p.OwnerUserid = u.Id
+GROUP BY u.Id
+ORDER BY Answers) as innerquery
+WHERE Questions > 0"
+
+df = sql(q)
+head(df)
+head(table(df$Answers))
+```
+
+23. Compute the table with information for the 75 users with the most accepted answers. This table should
+include
+• the user’s display name,
+• creation date,
+• location,
+• the number of badges they have won,
+– the names of the badges (as a single string)
+• the dates of the earliest and most recent accepted answer (as two fields)
+– the (unique) tags for all the questions for which they had the accepted answer (as a single string)
+Due to limitations of my machine, I could not get a decent runtime while using GROUP_CONCAT(b.Name) to put all badge names into one string, but this did work when I used LIMIT = 1, just to experiment, even then, it made R studio unbearable.
+
+To do this question, it required a total of 4 tables, all left joins since this made it much simpler and quicker to run. I used Id from the Users table as the primary key that linked all the tables together and I grouped them on this Id. Users table contained all the information on the user that we needed. However, first we needed to calculate the top 75 accepted answers users, so we linked the posts table twice, one to the question and one to the accepted answer that linked back to the users table. From that, we could simply COUNT the distinct Id from the answers table so we could order by DESC. Then we included the badges table where we simply linked the Id's together and could COUNT Id from the badges table. As prefaced above, group_concat for the badge names would not run within a reasonable amount of time, but I did manage to group_concat for the tags since they were a shorter string. Min and Max datetime() were added too.
+
+```{r}
+q = "SELECT u.Id, u.DisplayName, u.CreationDate, COUNT(DISTINCT a.Id) as AcceptedAnswers, COUNT(DISTINCT b.Id) as NumBadges, MIN(datetime(a.CreationDate)) as FirstAnswer, MAX(datetime(a.CreationDate)) as LatestAnswer, GROUP_CONCAT(DISTINCT q.Tags) as QuestionTags
+FROM Users as u
+LEFT JOIN Posts as q
+ON q.OwnerUserID = u.Id
+LEFT JOIN Posts as a
+ON a.Id = q.AcceptedAnswerId
+LEFT JOIN Badges as b
+ON b.UserId = u.Id
+GROUP BY u.Id
+ORDER BY AcceptedAnswers DESC
+LIMIT 75"
+
+df = sql(q)
+head(df)
+```
+
+24. How many questions received no answers (accepted or unaccepted)? How many questions had no
+accepted answer?
+To do this in a simpler way, I broke it into two sql commands, one for the first question and one for the second. I used the same format for both, but on the first command, I linked the two Posts tables with the parentId of the answer with the question Id. Then, since this was a left join, I could sum over the NULL values if the question did not have an answer. Same process for the accepted answer except that I linked the accepted answer id from the question to the id of the answer post.
+
+```{r}
+q = "SELECT SUM(CASE WHEN a.id IS NULL THEN 1 ELSE 0 END) as NoAnswer
+FROM Posts as q
+LEFT JOIN Posts as a
+ON a.ParentId = q.Id
+WHERE q.PostTypeId = 1"
+
+sql(q)
+```
+
+No Accepted Answers:
+```{r}
+q = "SELECT SUM(CASE WHEN a.id IS NULL THEN 1 ELSE 0 END) as NoAcceptedAnswer
+FROM Posts as q
+LEFT JOIN Posts as a
+ON q.AcceptedAnswerId = a.Id
+WHERE q.PostTypeId = 1"
+
+sql(q)
+```
+
+25. What is the distribution of answers per posted question?
+For this, I tabled the answercount from the Posts table. From this I compared it to when I left joined Posts and Posts together on Id and ParentId. When I summed the number of answers, I could only get it to sum when it had one or more, ie it would not return 0 if a post did not have any answers. When comparing to the table of the first command, the numbers are the same except the first table has a count for 0 answers and the second does not. The distribution is very heavily weighted towards 0-1-2 answers and very few greater than that.
+
+```{r}
+q = "SELECT q.Id, q.AnswerCount
+FROM Posts as q
+WHERE q.PostTypeId = 1"
+
+df = sql(q)
+table(df$AnswerCount)
+boxplot(df$AnswerCount, horizontal = T)
+summary(df$AnswerCount)
+```
+
+
+
+```{r}
+q = "SELECT q.Id, SUM(CASE WHEN a.Id IS NOT NULL THEN 1 ELSE 0 END)
+FROM Posts as q
+LEFT JOIN Posts as a
+ON a.ParentId = q.Id
+WHERE a.PostTypeId = 2
+AND q.PostTypeId = 1
+GROUP BY q.Id"
+
+df  = sql(q)
+
+table(df$`SUM(CASE WHEN a.Id IS NOT NULL THEN 1 ELSE 0 END)`)
+```
+
+26. What is the length of time for a question to receive an answer? to obtaining an accepted answer?
+To do this, we will join the posts table with itself on Id = ParentId for all questions and Id = AcceptedAnswerId for the accepted answers. When this is done, we can see that there are some outliers where the answer is received before the question, but in most cases, the answer comes after the questions.
+
+```{r}
+q = "SELECT q.Id, q.Title, q.CreationDate as QuestionDate, a.CreationDate as AnswerDate, julianday(a.CreationDate) - julianday(q.CreationDate) as AnswerTime
+FROM Posts as q, Posts as a
+WHERE q.Id = a.ParentId
+AND q.PostTypeId = 1
+AND a.PostTypeId = 2
+ORDER BY AnswerTime"
+
+df = sql(q)
+head(df)
+
+boxplot(df$AnswerTime, horizontal = T, xlab = "Days", main = "Distribution of Answer Times")
+summary(df$AnswerTime)
+```
+
+```{r}
+q = "SELECT q.Id, q.Title, q.CreationDate as QuestionDate, a.CreationDate as AnswerDate, julianday(a.CreationDate) - julianday(q.CreationDate) as AnswerTime
+FROM Posts as q, Posts as a
+WHERE q.AcceptedAnswerId = a.Id
+AND q.PostTypeId = 1
+AND a.PostTypeId = 2
+ORDER BY AnswerTime"
+
+df = sql(q)
+head(df)
+
+boxplot(df$AnswerTime, horizontal = T, xlab = "Days", main = "Distribution of Accepted Answer Times")
+summary(df$AnswerTime)
+```
+
+27. How many answers are typically received before the accepted answer?
+To do this, I first did this individually for each question, then found the average in another command after I knew this would work. I joined Posts three times together, once for the question, second time for all the answers, and third time for the accepted answer. From this, I used SUM(CASE) once again such that it summed all the times when the creation date of the answer not accepted was less than the creation date of the accepted answer. From there, I averaged all of the values in another sql command by using the first command as a nested query. I did mean() in R to validate the results.
+
+```{r}
+q = "SELECT q.Id, q.Title, SUM(CASE WHEN julianday(a.CreationDate) < julianday(ac.CreationDate) THEN 1 ELSE 0 END) as NumAnswersBeforeAccepted
+FROM Posts as q, Posts as a, Posts as ac
+WHERE q.Id = a.ParentId
+AND q.AcceptedAnswerId = ac.Id
+AND q.PostTypeId = 1
+AND a.PostTypeId = 2
+AND ac.PostTypeId = 2
+GROUP BY q.Id"
+df = sql(q)
+head(df)
+
+mean(df$NumAnswersBeforeAccepted)
+```
+
+```{r}
+q = "SELECT AVG(NumAnswersBeforeAccepted)
+FROM
+(SELECT q.Id, q.Title, SUM(CASE WHEN julianday(a.CreationDate) < julianday(ac.CreationDate) THEN 1 ELSE 0 END) as NumAnswersBeforeAccepted
+FROM Posts as q, Posts as a, Posts as ac
+WHERE q.Id = a.ParentId
+AND q.AcceptedAnswerId = ac.Id
+AND q.PostTypeId = 1
+AND a.PostTypeId = 2
+AND ac.PostTypeId = 2
+GROUP BY q.Id) as innerquery"
+
+sql(q)
+```
+
