@@ -4,4 +4,6 @@ This report is formatted slightly differently than the others I have done. Using
 
 https://meta.stackexchange.com/questions/2677/database-schema-documentation-for-the-public-data-dump-and-sede 
 
-I answer questions about the data set in increasing complexity to exhibit an understanding of SQLite. I will also upload the version of the database used for this project in the data section (version from May 2023).
+I answer questions about the data set in increasing complexity to exhibit an understanding of SQLite. I will not be able to upload the version of the database used for this project (version from May 2023) since the size is too large. The data dump can be found here:
+
+https://archive.org/details/stackexchange
